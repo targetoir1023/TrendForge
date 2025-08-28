@@ -1,0 +1,109 @@
+//@version=5
+indicator("[Integrated] EMA Alignment + Engulfing + Market Structure", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// === Inputs === //
+emaLen   = input.int(200, "EMA Length")
+rr       = input.float(3.0, "Reward:Risk Ratio", step=0.1)
+slPct    = input.float(1.0, "Stop Loss %", step=0.1)
+tpPct    = input.float(3.0, "Take Profit %", step=0.1)
+
+tf1 = input.string("60", "Lower TF (e.g. 1H)")
+tf2 = input.string("240", "Higher TF (e.g. 4H)")
+
+useRealtime = input.bool(true, "Use Real-Time Higher TF Data (may repaint)", 
+     tooltip="When ON, higher timeframe EMA updates live without waiting for bar close (faster but can repaint). When OFF, values only update after the higher timeframe bar closes (safer, no repaint).")
+lookaheadMode = useRealtime ? barmerge.lookahead_on : barmerge.lookahead_off
+
+// === EMA Logic === //
+emaTF1 = request.security(syminfo.tickerid, tf1, ta.ema(close, emaLen), lookahead=lookaheadMode)
+emaTF2 = request.security(syminfo.tickerid, tf2, ta.ema(close, emaLen), lookahead=lookaheadMode)
+
+bullishAlign = emaTF1 > emaTF2 and close > emaTF1
+bearishAlign = emaTF1 < emaTF2 and close < emaTF1
+
+plot(emaTF1, "1H EMA 200", color=color.rgb(88, 255, 59), linewidth=2)
+plot(emaTF2, "4H EMA 200", color=color.rgb(255, 21, 0), linewidth=2)
+
+// === Swing / BOS / MSS Logic === //
+left      = input.int(6, "Swing Left", minval=1)
+right     = input.int(6, "Swing Right", minval=1)
+rayLength = input.int(2, "Ray Length (for swing rays)", minval=1)
+
+swingHigh = ta.pivothigh(high, left, right)
+swingLow  = ta.pivotlow(low, left, right)
+
+var float lastSwingHigh = na
+var float lastSwingLow  = na
+var int   lastHighBar   = na
+var int   lastLowBar    = na
+
+if not na(swingHigh)
+    lastSwingHigh := swingHigh
+    lastHighBar   := bar_index - right
+
+if not na(swingLow)
+    lastSwingLow := swingLow
+    lastLowBar   := bar_index - right
+
+var int lastBOSHighBar = na
+var int lastBOSLowBar  = na
+var string lastBOSDir = "none"
+
+bosBull = not na(lastSwingHigh) and ta.crossover(close, lastSwingHigh) and (na(lastBOSHighBar) or lastHighBar != lastBOSHighBar)
+bosBear = not na(lastSwingLow)  and ta.crossunder(close, lastSwingLow) and (na(lastBOSLowBar) or lastLowBar  != lastBOSLowBar)
+
+mssBull = (lastBOSDir == "bear") and bosBull
+mssBear = (lastBOSDir == "bull") and bosBear
+
+if bosBull
+    lastBOSHighBar := lastHighBar
+    lastBOSDir := "bull"
+
+if bosBear
+    lastBOSLowBar := lastLowBar
+    lastBOSDir := "bear"
+
+// === Candle Confirmations === //
+bullishEngulfing = close[1] < open[1] and close > open and close >= open[1] and open <= close[1]
+bearishEngulfing = close[1] > open[1] and close < open and close <= open[1] and open >= close[1]
+
+// === EMA + Engulfing + Market Structure === //
+crossEvent = ta.cross(emaTF1, emaTF2)
+
+var int signalCount = 0
+if crossEvent
+    signalCount := 0
+
+validLong  = bullishAlign and bullishEngulfing and signalCount < 3 and (bosBull or mssBull)
+validShort = bearishAlign and bearishEngulfing and signalCount < 3 and (bosBear or mssBear)
+
+if validLong or validShort
+    signalCount += 1
+
+// === Plotting Signals === //
+plotshape(validLong,  title="Bullish Entry", style=shape.triangleup,   location=location.belowbar, color=color.lime, size=size.small, text="")
+plotshape(validShort, title="Bearish Entry", style=shape.triangledown, location=location.abovebar, color=color.red,  size=size.small, text="")
+
+// === TP & SL Lines === //
+var line[] tpLines = array.new_line()
+var line[] slLines = array.new_line()
+
+makeTrade(_entry, _stop, _target, _isLong) =>
+    colTP = color.green
+    colSL = color.red
+    tp = line.new(bar_index, _target, bar_index+10, _target, color=colTP, style=line.style_dashed, width=1)
+    sl = line.new(bar_index, _stop,   bar_index+10, _stop,   color=colSL, style=line.style_dashed, width=1)
+    array.push(tpLines, tp)
+    array.push(slLines, sl)
+
+if validLong
+    entry = close
+    stop  = entry * (1 - slPct/100)
+    target = tpPct > 0 ? entry * (1 + tpPct/100) : entry + (entry - stop) * rr
+    makeTrade(entry, stop, target, true)
+
+if validShort
+    entry = close
+    stop  = entry * (1 + slPct/100)
+    target = tpPct > 0 ? entry * (1 - tpPct/100) : entry - (stop - entry) * rr
+    makeTrade(entry, stop, target, false)
