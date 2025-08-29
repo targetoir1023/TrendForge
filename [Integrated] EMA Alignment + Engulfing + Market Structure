@@ -1,5 +1,5 @@
 //@version=5
-indicator("[Integrated] EMA Alignment + Engulfing + Market Structure", overlay=true, max_labels_count=500, max_lines_count=500)
+indicator("TrendForge", overlay=true, max_labels_count=500, max_lines_count=500)
 
 // === Inputs === //
 emaLen   = input.int(200, "EMA Length")
